@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+# raw PDFs and intermediate CSVs stay local; the app only needs data/processed + data/reference
+data/raw/
+data/interim/
+*.pdf
+*.png
+.streamlit/secrets.toml

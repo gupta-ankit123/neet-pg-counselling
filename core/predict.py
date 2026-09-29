@@ -100,12 +100,14 @@ def chance_label(rank, est_main, est_stray):
 def predict(p: Profile, closing: pd.DataFrame, seat_matrix: pd.DataFrame = None, policy: pd.DataFrame = None,
             deemed_fees: pd.DataFrame = None, show_all=False):
     rules = eligibility(p)
-    allow = {(c, q): (ok, note) for c, q, ok, note in rules}
-    df = closing.copy()
-    df["rule"] = [allow.get((c, q), (False, "")) for c, q in zip(df["counselling"], df["quota_code"])]
-    df["uncertain"] = [ok is None for ok, _ in df["rule"]]
-    df["elig_note"] = df["rule"].str[1]
-    df = df[[ok is True or (ok is None and p.include_uncertain) for ok, _ in df["rule"]]].copy()
+    r = pd.DataFrame([(c, q, ok is None, ok is True or (ok is None and p.include_uncertain), note)
+                      for c, q, ok, note in rules],
+                     columns=["counselling", "quota_code", "uncertain", "_keep", "elig_note"])
+    r = r[r["_keep"]].drop(columns="_keep")
+    # cheap pre-filters on the full table before the merge
+    df = closing[closing["degree"].isin(p.degrees) & closing["college_type"].isin(p.college_types)
+                 & closing["clinical_type"].isin(p.clinical_types)]
+    df = df.merge(r, on=["counselling", "quota_code"], how="inner")
     # category / PwD / candidate type
     keep = []
     for c, g in df.groupby("counselling"):
@@ -192,7 +194,10 @@ def _decorate(out, p, seat_matrix, policy, deemed_fees):
     if seat_matrix is not None and len(out):
         sm = seat_matrix.groupby(["college", "branch"])["seats"].sum()
         out["seats_2026"] = [sm.get((c, b)) if c else None for c, b in zip(out["nmc_college"], out["branch"])]
-    out["cost_info"] = [cost_info(r, policy, deemed_fees) for r in out.itertuples()]
+    # one lookup per distinct (type, college, state) instead of per row
+    keys = list(zip(out["college_type"], out["institute"], out["inst_state"]))
+    info = {k: cost_info(*k, policy, deemed_fees) for k in set(keys)}
+    out["cost_info"] = [info[k] for k in keys]
     # "prediction" view: what you are most likely to get -> section, preferred first, govt first, best chance
     out = out.sort_values(["section", "pref_rank", "tier", "chance_ord", "est_closing"]).reset_index(drop=True)
     return out
@@ -208,31 +213,41 @@ def choice_order(pred: pd.DataFrame):
 
 
 _fee_cache = {}
+_policy_cache = {}
 
 
-def cost_info(r, policy, deemed_fees):
+def _policy_text(state, policy):
+    if state not in _policy_cache:
+        pol = policy[policy["state"] == state]
+        txt = ""
+        if len(pol):
+            x = pol.iloc[0]
+            txt = f"Bond: {x.bond_years or '?'} yr, {x.bond_penalty or '?'}"
+            if pd.notna(x.stipend_y1):
+                txt += f" · Stipend ~₹{int(x.stipend_y1):,}/mo (Y1)"
+            if pd.notna(x.govt_tuition_per_year) and x.govt_tuition_per_year:
+                txt += f" · Fee {x.govt_tuition_per_year}"
+        _policy_cache[state] = txt
+    return _policy_cache[state]
+
+
+def cost_info(college_type, institute, inst_state, policy, deemed_fees):
     parts = []
-    if r.college_type == "Deemed" and deemed_fees is not None and len(deemed_fees):
-        key = (r.institute, r.inst_state)
+    if college_type == "Deemed" and deemed_fees is not None and len(deemed_fees):
+        key = (institute, inst_state)
         if key not in _fee_cache:
-            sub = deemed_fees[deemed_fees["state"] == r.inst_state]
-            m = process.extractOne(r.institute, sub["college"].tolist(), scorer=fuzz.token_set_ratio) if len(sub) else None
+            sub = deemed_fees[deemed_fees["state"] == inst_state]
+            m = process.extractOne(institute, sub["college"].tolist(), scorer=fuzz.token_set_ratio) if len(sub) else None
             _fee_cache[key] = sub[sub["college"] == m[0]].iloc[0] if m and m[1] >= 85 else None
         f = _fee_cache[key]
         parts.append(f"Fee ₹{f.annual_fee_min/1e5:.1f}–{f.annual_fee_max/1e5:.1f} L/yr (range, all branches)"
                      if f is not None else "Deemed: fees typically ₹10–50 L/yr - check college")
-    elif r.college_type.startswith("DNB"):
+    elif college_type.startswith("DNB"):
         parts.append("DNB: NBEMS fee ~₹1.25 L/yr; stipend per hospital (private DNB hospitals may charge more)")
-    elif r.college_type == "Private":
+    elif college_type == "Private":
         parts.append("Private (state): fee per state fee committee - see prospectus")
-    if r.college_type in ("Govt", "DNB-Govt") and policy is not None:
-        pol = policy[policy["state"] == r.inst_state]
-        if len(pol):
-            x = pol.iloc[0]
-            s = f"Bond: {x.bond_years or '?'} yr, {x.bond_penalty or '?'}"
-            if pd.notna(x.stipend_y1):
-                s += f" · Stipend ~₹{int(x.stipend_y1):,}/mo (Y1)"
-            if pd.notna(x.govt_tuition_per_year) and x.govt_tuition_per_year:
-                s += f" · Fee {x.govt_tuition_per_year}"
-            parts.append(s)
+    if college_type in ("Govt", "DNB-Govt") and policy is not None:
+        txt = _policy_text(inst_state, policy)
+        if txt:
+            parts.append(txt)
     return " | ".join(parts)

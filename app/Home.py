@@ -7,7 +7,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import data  # noqa: E402
 from core.predict import CENTRAL_QUOTAS, Profile, choice_order, eligibility, predict  # noqa: E402
-from core.ui import not_ready, setup, style_chance  # noqa: E402
+from core.ui import CHANCE_EMOJI, not_ready, setup  # noqa: E402
 
 setup("Predictor", "🎯")
 if not data.data_ready():
@@ -84,8 +84,15 @@ with st.expander("✅ Which counsellings / quotas you can take part in", expande
     st.dataframe(el, hide_index=True, width="stretch")
     st.caption("State quotas covered so far: Bihar and Odisha. Other states can be added to the pipeline.")
 
-pred = predict(p, closing, data.seat_matrix(), data.policy(), data.deemed_fees(),
-               show_all=st.session_state.get("show_all", False))
+@st.cache_data(show_spinner="Predicting ...", max_entries=50)
+def cached_predict(profile_items, show_all):
+    return predict(Profile(**dict(profile_items)), data.closing(), data.seat_matrix(), data.policy(),
+                   data.deemed_fees(), show_all=show_all)
+
+
+# lists -> tuples so the profile can be used as a cache key; filter / view changes then cost nothing
+prof_key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in st.session_state["profile"].items()))
+pred = cached_predict(prof_key, st.session_state.get("show_all", False))
 if pred.empty:
     st.warning("No matching seats found with these filters.")
     st.stop()
@@ -93,7 +100,7 @@ if pred.empty:
 # ------------------------------------------------------------------ headline
 m = st.columns(5)
 for col, lab in zip(m, ["High", "Good", "Borderline", "Low (reach)", "Stray only"]):
-    col.metric(lab, int((pred["chance"] == lab).sum()))
+    col.metric(f"{CHANCE_EMOJI[lab]} {lab}", int((pred["chance"] == lab).sum()))
 
 top = pred[pred["chance"].isin(["High", "Good"])].sort_values(["section", "tier", "est_closing"])
 
@@ -128,7 +135,8 @@ def show(df, key):
     t = t[list(dict.fromkeys(cols))]
     if "uncertain" in df and df["uncertain"].any():
         t.insert(0, "⚠️", df["uncertain"].map({True: "verify eligibility", False: ""}).values)
-    st.dataframe(style_chance(t), hide_index=True, width="stretch", height=min(600, 38 + 35 * len(t)),
+    t["Chance"] = t["Chance"].map(lambda c: f"{CHANCE_EMOJI.get(c, '')} {c}".strip())
+    st.dataframe(t, hide_index=True, width="stretch", height=min(600, 38 + 35 * len(t)),
                  column_config={c: st.column_config.NumberColumn(format="%d") for c in year_cols + ["Est. 2026 closing"]})
     st.download_button("⬇️ Download CSV", t.to_csv(index=False).encode(), f"{key}.csv", "text/csv", key=f"dl_{key}")
 
@@ -155,31 +163,28 @@ def all_options(key):
     sections(d, key)
 
 
-if p.preferred_branches:
-    tabs = st.tabs(["⭐ Preferred branches", "📋 All options", "🧾 Suggested choice-filling order", "📈 Round-wise view"])
-    with tabs[0]:
-        sections(pred[pred["preferred"]], "preferred")
-    with tabs[1]:
-        all_options("all")
-else:
-    # no branch preference: all options first (Govt before private, best chance first)
-    tabs = st.tabs(["📋 All options", "🧾 Suggested choice-filling order", "📈 Round-wise view"])
-    tabs = [None] + list(tabs)
-    with tabs[1]:
+views = (["⭐ Preferred branches"] if p.preferred_branches else []) +         ["📋 All options", "🧾 Suggested choice-filling order", "📈 Round-wise view"]
+view = st.segmented_control("View", views, default=views[0], key="view", label_visibility="collapsed") or views[0]
+
+if view == "⭐ Preferred branches":
+    sections(pred[pred["preferred"]], "preferred")
+elif view == "📋 All options":
+    if not p.preferred_branches:
         st.caption("No preferred branches selected - showing every option you have a chance at. "
                    "Use the Branch filter below, or pick preferred branches in **Your details**.")
-        all_options("all")
-with tabs[2]:
+    all_options("all")
+elif view == "🧾 Suggested choice-filling order":
     st.caption("Order: All India before State → your preferred branches in order → Govt before DNB-Govt before "
                "Deemed/Private → most competitive (lowest closing rank) first, so dream options sit above safe ones. "
                "Fill ALL of these (and more) — in MCC you are never forced to take a lower choice than one you get.")
     co = choice_order(pred)
     show(co.rename(columns={"choice_no": "Choice #"}).assign(**{"Choice #": co["choice_no"]}), "choice_order")
-with tabs[3]:
+else:
     st.caption("Closing rank in each round for your eligible seats. Blank = no allotment of that seat group in that "
                "round (seat not offered, or filled in an earlier round).")
     r = pred[["institute", "branch", "degree", "quota_name", "allotted_cat", "chance"] + year_cols].rename(columns=BASE)
-    st.dataframe(style_chance(r), hide_index=True, width="stretch", height=600,
+    r["Chance"] = r["Chance"].map(lambda c: f"{CHANCE_EMOJI.get(c, '')} {c}".strip())
+    st.dataframe(r, hide_index=True, width="stretch", height=600,
                  column_config={c: st.column_config.NumberColumn(format="%d") for c in year_cols})
 
 with st.expander("How is this predicted?"):

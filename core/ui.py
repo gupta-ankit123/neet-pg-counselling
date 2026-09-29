@@ -4,6 +4,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+CHANCE_EMOJI = {"High": "🟢", "Good": "🟩", "Borderline": "🟡", "Low (reach)": "🟠", "Stray only": "🟣"}
 CHANCE_COLORS = {"High": "#1b7f3b", "Good": "#4caf50", "Borderline": "#f0a202", "Low (reach)": "#e4572e",
                  "Stray only": "#8e7cc3"}
 

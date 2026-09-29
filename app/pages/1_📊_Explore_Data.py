@@ -61,15 +61,16 @@ if pwd != "All":
 c = st.columns(4)
 c[0].metric("Allotments", f"{len(d):,}")
 c[1].metric("Colleges", f"{d['institute'].nunique():,}")
-c[2].metric("Surrendered (next round)", f"{d['seat_status'].str.contains('Surrender', case=False).sum():,}")
-c[3].metric("Not reported (next round)", f"{d['seat_status'].str.contains('Not Reported', case=False).sum():,}")
+c[2].metric("Surrendered (next round)", f"{d['seat_status'].eq('Seat Surrendered').sum():,}")
+c[3].metric("Not reported (next round)", f"{d['seat_status'].eq('Not Reported').sum():,}")
 
 if view.startswith("Closing"):
     keys = ["counselling", "year", "round_label", "quota_name", "institute", "inst_state", "college_type", "branch",
             "clinical_type", "degree", "allotted_cat"]
-    g = d.groupby(keys, dropna=False).agg(opening=("rank", "min"), closing=("rank", "max"), allotted=("rank", "size"),
-                                          surrendered=("seat_status", lambda s: s.str.contains("Surrender", case=False).sum()),
-                                          not_reported=("seat_status", lambda s: s.str.contains("Not Reported", case=False).sum()))
+    d = d.assign(_surr=d["seat_status"].eq("Seat Surrendered"), _nr=d["seat_status"].eq("Not Reported"))
+    g = d.groupby(keys, dropna=False, observed=True).agg(
+        opening=("rank", "min"), closing=("rank", "max"), allotted=("rank", "size"),
+        surrendered=("_surr", "sum"), not_reported=("_nr", "sum"))
     t = g.reset_index().sort_values(["year", "closing"], ascending=[False, True])
 else:
     t = d[["counselling", "year", "round_label", "rank", "quota_name", "institute", "inst_state", "college_type",
@@ -79,6 +80,6 @@ else:
                                                         "prev_status": "previous seat status"})
     t = t.sort_values(["year", "rank"], ascending=[False, True])
 
-st.caption(f"{len(t):,} rows" + (" (showing first 20,000 - download for all)" if len(t) > 20000 else ""))
-st.dataframe(t.head(20000), hide_index=True, width="stretch", height=620)
+st.caption(f"{len(t):,} rows" + (" (showing first 5,000 - download for all)" if len(t) > 5000 else ""))
+st.dataframe(t.head(5000), hide_index=True, width="stretch", height=620)
 st.download_button("⬇️ Download filtered data (CSV)", t.to_csv(index=False).encode(), "neetpg_filtered.csv", "text/csv")
